@@ -1,29 +1,36 @@
-/*
-Copyright 2010 Jean Fairlie jmfairlie@gmail.com
-
-CacaMap is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-*/
-
-
-/** @file cacamap.h
-* CacaMap is a Simple Qt OSM Map Widget 
-*/
-
 #ifndef CACAMAP_H
 #define CACAMAP_H
+
 #include <QtGui>
 #include <QtNetwork>
-#include <iostream>
-#include <vector>
-#include "servermanager.h"
+#include <QWidget>
+#include <QSlider>
+#include <QHBoxLayout>
+
+
+struct tileserver
+{
+    QString name;/**<name of the tile server*/
+    QString url;/**< url template for accessing tiles*/
+    QString folder;/**< name of folder where tiles will be stored*/
+    QString path;/**< path where tiles will be stored*/
+    QString tile;/**< tile file*/
+};
+
+class servermanager
+{
+public:
+    servermanager();
+    QString getTileUrl(int,quint32,quint32);
+    QString tileCacheFolder();
+    //returns the filename of the file as it should be stored in HD
+    QString fileName(quint32);
+    QString serverName();
+    QString filePath(int, quint32);
+
+private:
+    tileserver servermain;
+};
 
 /**
 * The quint32 version of QPoint
@@ -75,7 +82,7 @@ struct tile
 /**
 * maximum space allowed for caching tiles
 */
-#define CACHE_MAX 1*1024*1024 //1MB
+#define CACHE_MAX 100*1024*1024 //100 MB
 /**
 Main map widget
 */
@@ -87,25 +94,30 @@ class cacaMap : public QWidget
 Q_OBJECT
 
 public:	
-	cacaMap(QWidget * _parent=0);
+    cacaMap(QPointF startcoords,
+            bool enable_download,
+            QWidget * _parent=0);
 
 	virtual ~cacaMap();
-	void setGeoCoords(QPointF);
+
 	bool zoomIn();
 	bool zoomOut();
 	bool setZoom(int level);
-	QPointF getGeoCoords();
-	QStringList getServerNames();
-	void setServer(int);
-	int getZoom();
+    int getZoom();
 
+    void setGeoCoords(QPointF);
+    QPointF getGeoCoords();
+
+    void setEnableDownloadTiles(bool enabled);
+    bool enabledDownloadTiles() const;
 private:
 	QNetworkAccessManager *manager;/**< manages http requests. */
 	tileSet tilesToRender;/**< range of visible tiles. */
 	QHash<QString,int> tileCache;/**< list of cached tiles (in HDD). */
 	QHash<QString,tile> downloadQueue;/**< list of tiles waiting to be downloaded. */
 	QHash<QString,int> unavailableTiles;/**< list of tiles that were not found on the server.*/
-	bool downloading;/**< flag that indicates if there is a download going on. */
+    bool enable_downloading;
+    bool downloading;/**< flag that indicates if there is a download going on. */
 	QString folder;/**< root application folder. */
 	QMovie loadingAnim;/**< to show a 'loading' animation for yet unavailable tiles. */
 	QPixmap notAvailableTile;
@@ -122,7 +134,7 @@ protected:
 	int minZoom;/**< Minimum zoom level (farthest away).*/
 	int maxZoom;/**< Maximum zoom level (closest).*/
 
-	int tileSize; /**< size in px of the square %tile. */
+    const int tileSize; /**< size in px of the square %tile. */
 	quint32 cacheSize;/**< current %tile cache size in bytes. */
 	//check QtMobility QGeoCoordinate
 	QPointF geocoords; /**< current longitude and latitude. */
@@ -142,4 +154,34 @@ protected slots:
 	void slotDownloadReady(QNetworkReply *);
 	void slotError(QNetworkReply::NetworkError);
 };
+
+
+
+class cacaMapMouse: public cacaMap
+{
+    Q_OBJECT
+public:
+    cacaMapMouse(QPointF startcoords,
+                 bool enable_download,
+                 QWidget* _parent=0);
+    ~cacaMapMouse();
+protected:
+    void paintEvent(QPaintEvent *);
+    void mousePressEvent(QMouseEvent*);
+    void mouseMoveEvent(QMouseEvent*);
+    void mouseDoubleClickEvent(QMouseEvent*);
+private:
+    QPoint mouseAnchor;/**< used to keep track of the last mouse click location.*/
+    QTimer * timer;
+    QHBoxLayout * hlayout;
+
+    QSlider * slider;
+    QPointF destination; /**< used for dblclick+zoom animations */
+    float mindistance;/**< used to identify the end of the animation*/
+    float animrate;
+protected slots:
+    void zoomAnim();
+    void updateZoom(int);
+};
+
 #endif

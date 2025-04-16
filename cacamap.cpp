@@ -1,21 +1,84 @@
-/*
-Copyright 2010 Jean Fairlie jmfairlie@gmail.com
-
-This file is part of CacaMap
-CacaMap is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-*/
-
 #include "cacamap.h"
+#include <iostream>
 
 using namespace std;
+
+servermanager::servermanager()
+{
+    tileserver serveritem;
+
+    serveritem.name = "OSM cahced";
+    //serveritem.url = "http://a.tile.openstreetmap.org/%z/%x/%y.png";
+    serveritem.url = "http://mt1.google.com/vt/x=%x&y=%y&z=%z";
+    serveritem.folder = "map_cache";
+    serveritem.path = "/%z/%x/";
+    serveritem.tile = "%y.png";
+
+    servermain = serveritem;
+}
+
+
+/**
+* Get URL of a specific %tile
+* @param zoom zoom level
+* @return string containing the url where the %tile image can be found.
+*/
+QString servermanager::getTileUrl(int zoom, quint32 x, quint32 y)
+{
+    QString sz,sx,sy;
+    sz.setNum(zoom);
+    sx.setNum(x);
+    sy.setNum(y);
+    QString urltmpl = servermain.url;
+
+    urltmpl.replace(QString("%z"),sz);
+    urltmpl.replace(QString("%x"),sx);
+    urltmpl.replace(QString("%y"),sy);
+    return urltmpl;
+}
+
+/**
+* @return name of the cache folder for the given tile server
+*/
+QString servermanager::tileCacheFolder()
+{
+    return  servermain.folder;
+}
+
+/**
+* @return tile file name
+*/
+QString servermanager::fileName(quint32 y)
+{
+    QString filetmpl = servermain.tile;
+    QString sy;
+    sy.setNum(y);
+    filetmpl.replace("%y",sy);
+    return filetmpl;
+}
+
+/**
+* @return tile file path
+*/
+QString servermanager::filePath(int zoom, quint32 x)
+{
+    QString filetmpl = servermain.path;
+    QString sz, sx;
+    sz.setNum(zoom);
+    sx.setNum(x);
+    filetmpl.replace("%z",sz);
+    filetmpl.replace("%x",sx);
+    return filetmpl;
+}
+
+
+/**
+* @return server name
+*/
+QString servermanager::serverName()
+{
+    return servermain.name;
+}
 /**
 * constructor
 */
@@ -86,23 +149,22 @@ QPointF myMercator::pixelToGeoCoord(longPoint const &pixelcoord, int zoom, int t
 /**
 * constructor
 */
-cacaMap::cacaMap(QWidget* parent):QWidget(parent)
+cacaMap::cacaMap(QPointF startcoords,
+                 bool enable_download,
+                 QWidget* parent):QWidget(parent), tileSize(256), enable_downloading(enable_download)
 {
-	cout<<"cacamap constructor"<<endl;
-	if (!servermgr.loadConfigFile("tileservers.xml"))
-	{
-		std::cout<<"error loading server file."<<std::endl;
-	}
 	cacheSize = 0;
 	maxZoom = 18;
 	minZoom = 0;
 	folder = QDir::currentPath();
 	loadCache();
-	geocoords = QPointF(23.8564,61.4667);
+    geocoords = startcoords;
 	downloading = false;
-	tileSize = 256;
 	zoom = 14;
 	manager = new QNetworkAccessManager(this);
+    manager->setStrictTransportSecurityEnabled(false);
+    manager->setRedirectPolicy(QNetworkRequest::SameOriginRedirectPolicy);
+    //manager->setRedirectPolicy();
 	loadingAnim.setFileName("loading.gif");
 	loadingAnim.setScaledSize(QSize(tileSize,tileSize));
 	loadingAnim.start();
@@ -117,8 +179,6 @@ Sets the latitude and longitude to the coords in newcoords
 */
 void cacaMap::setGeoCoords(QPointF newcoords)
 {
-	//geocoords.setX(newcoords.x());
-	//geocoords.setY(newcoords.y());
 	geocoords = newcoords;
 }
 /**
@@ -175,24 +235,20 @@ QPointF cacaMap::getGeoCoords()
 {
 	return geocoords;
 }
-/**
-*@return list of available tile server names
-*/
-QStringList cacaMap::getServerNames()
+
+void cacaMap::setEnableDownloadTiles(bool enabled)
 {
-	return servermgr.getServerNames();		
+    enable_downloading = enabled;
+    if (enable_downloading == false)
+    {
+        downloadQueue.clear();
+    }
+    //TODO: signal
 }
-/**
-* Change tile server to the one in index
-*/
-void cacaMap::setServer(int index)
+
+bool cacaMap::enabledDownloadTiles() const
 {
-	servermgr.selectServer(index);
-	downloadQueue.clear();
-	loadCache();
-	downloading = false;
-	updateContent();
-	update();
+    return enable_downloading;
 }
 /**
 *   @return current zoom level
@@ -210,7 +266,7 @@ int cacaMap::getZoom()
 */
 QString cacaMap::getTilePath(int zoom,qint32 x)
 {
-	return "cache/"+servermgr.tileCacheFolder()+servermgr.filePath(zoom,x);
+    return servermgr.tileCacheFolder()+servermgr.filePath(zoom,x);
 }
 
 /**
@@ -286,7 +342,7 @@ void cacaMap::downloadPicture()
 			QNetworkRequest request;
 			request.setUrl(QUrl(surl));
 			QNetworkReply *reply = manager->get(request);
-			connect(reply, SIGNAL(error(QNetworkReply::NetworkError)),this, SLOT(slotError(QNetworkReply::NetworkError)));
+            connect(reply, SIGNAL(errorOccurred(QNetworkReply::NetworkError)),this, SLOT(slotError(QNetworkReply::NetworkError)));
 			connect(manager, SIGNAL(finished(QNetworkReply*)),this, SLOT(slotDownloadReady(QNetworkReply*)));
 			connect(reply, SIGNAL(downloadProgress(qint64,qint64)),this, SLOT(slotDownloadProgress(qint64, qint64)));
 		}
@@ -310,36 +366,33 @@ void cacaMap::loadCache()
 	tileCache.clear();
 	QDir::setCurrent(folder);
 	QDir dir;
-	if (dir.cd("cache"))
-	{
-		if (dir.cd(servermgr.tileCacheFolder()))
-		{
-			QStringList zoom = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-			QString zoomLevel;
-			for(int i=0; i< zoom.size(); i++)
-			{
-				zoomLevel = zoom.at(i);
-				dir.cd(zoomLevel);
-				QStringList longitudes = dir.entryList(QDir::Dirs|QDir::NoDotAndDotDot);
-				QString lon;
-				for(int j=0; j< longitudes.size(); j++)
-				{
-					lon = longitudes.at(j);
-					dir.cd(lon);
-					QFileInfoList latitudes = dir.entryInfoList(QDir::Files|QDir::NoDotAndDotDot);
-					QString lat;
-					for(int k=0; k< latitudes.size(); k++)
-					{
-						lat = latitudes.at(k).baseName();
-						cacheSize+= latitudes.at(k).size();
-						QString name = zoomLevel+"."+lon+"."+lat;
-						tileCache.insert(name,1);
-					}
-					dir.cdUp();//go back to zoom level folder
-				}
-				dir.cdUp();//go back to tile folder
-			}
-		}
+    if (dir.cd(servermgr.tileCacheFolder()))
+    {
+        QStringList zoom = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        QString zoomLevel;
+        for(int i=0; i< zoom.size(); i++)
+        {
+            zoomLevel = zoom.at(i);
+            dir.cd(zoomLevel);
+            QStringList longitudes = dir.entryList(QDir::Dirs|QDir::NoDotAndDotDot);
+            QString lon;
+            for(int j=0; j< longitudes.size(); j++)
+            {
+                lon = longitudes.at(j);
+                dir.cd(lon);
+                QFileInfoList latitudes = dir.entryInfoList(QDir::Files|QDir::NoDotAndDotDot);
+                QString lat;
+                for(int k=0; k< latitudes.size(); k++)
+                {
+                    lat = latitudes.at(k).baseName();
+                    cacheSize+= latitudes.at(k).size();
+                    QString name = zoomLevel+"."+lon+"."+lat;
+                    tileCache.insert(name,1);
+                }
+                dir.cdUp();//go back to zoom level folder
+            }
+            dir.cdUp();//go back to tile folder
+        }
 		QDir::setCurrent(folder);
 		cout<<"cache size "<<(float)cacheSize/1024/1024<<" MB"<<endl;
 	}
@@ -399,11 +452,6 @@ void cacaMap::slotDownloadReady(QNetworkReply * _reply)
 
 				QDir::setCurrent(folder);
 				QDir dir;
-				if (!dir.exists("cache"))
-				{
-					dir.mkdir("cache");
-				}
-				dir.cd("cache");
 				if (!dir.exists(servermgr.tileCacheFolder()))
 				{
 					dir.mkdir(servermgr.tileCacheFolder());
@@ -455,7 +503,7 @@ void cacaMap::slotDownloadReady(QNetworkReply * _reply)
 	}
 	else
 	{
-		cout<<"network error: ("<<error<<") "<<_reply->errorString().toStdString()<<endl;
+        qDebug() <<"network error: ("<<error<<") "<<_reply->errorString();
 		
 		if(found)
 		{
@@ -587,7 +635,7 @@ void cacaMap::updateBuffer()
 			qint32 valx =((i<0)*numtiles + i%numtiles)%numtiles;
 			x.setNum(valx);
 			QPixmap image;
-			int posx = (i-tilesToRender.left)*tileSize - tilesToRender.offsetx;
+            int posx = (i-tilesToRender.left)*tileSize - tilesToRender.offsetx;
 			int posy =  (j-tilesToRender.top)*tileSize - tilesToRender.offsety;
 			//dont try to render tiles with y coords outside range
 			//cause we cant do vertical wrapping!
@@ -619,7 +667,7 @@ void cacaMap::updateBuffer()
 					image = notAvailableTile;
 				}
 				//the tile is not cached so download it
-				else
+                else if (enable_downloading)
 				{
 					//check that the image hasnt been queued already
 					if (!downloadQueue.contains(tileid))
@@ -634,14 +682,14 @@ void cacaMap::updateBuffer()
 					}
 					//crop a tile from a lower zoom level and use it as a patch(a la google maps)
 					//while the tile is downloading	
-					image = getTilePatch(tilesToRender.zoom,valx,j,0,0,tileSize);
+                    image = getTilePatch(tilesToRender.zoom,valx,j,0,0,tileSize);
 				}
 				p.drawPixmap(posx,posy,image);
 			}
 		}
 	}
 	p.drawRect(0,0,width()-1, height()-1);
-	if (!downloading)
+    if (enable_downloading && !downloading)
 	{
 		downloadPicture();
 	}
@@ -655,4 +703,118 @@ void cacaMap::updateContent()
 {
 	updateTilesToRender();
 	updateBuffer();
+}
+
+cacaMapMouse::cacaMapMouse(QPointF startcoords,
+                           bool enable_download,
+                           QWidget* parent):cacaMap(startcoords,enable_download,parent)
+{
+    cout<<"derived constructor"<<endl;
+    timer = new QTimer(this);
+    mindistance = 0.025f;
+    animrate = 0.5f;
+
+    hlayout = new QHBoxLayout;
+
+    slider = new QSlider(Qt::Vertical,this);
+    slider->setTickPosition(QSlider::TicksBothSides);
+    slider->setMaximum(maxZoom);
+    slider->setMinimum(minZoom);
+    slider->setSliderPosition(zoom);
+    connect(slider, SIGNAL(valueChanged(int)),this, SLOT(updateZoom(int)));
+
+    hlayout->addWidget(slider);
+    hlayout->addStretch();
+    setLayout(hlayout);
+
+}
+
+cacaMapMouse::~cacaMapMouse()
+{
+    delete slider;
+    delete hlayout;
+}
+
+/**
+Saves the screen coordinates of the last click
+This is used for scrolling the map
+@see myDerived::mouseMoveEvent()
+*/
+void cacaMapMouse::mousePressEvent(QMouseEvent* e)
+{
+    mouseAnchor = e->pos();
+}
+
+/**
+Calculates the length of the mouse drag and
+translates it into a new coordinate, map is rerendered
+*/
+void cacaMapMouse::mouseMoveEvent(QMouseEvent* e)
+{
+    QPoint delta = e->pos()- mouseAnchor;
+    mouseAnchor = e->pos();
+    longPoint p = myMercator::geoCoordToPixel(geocoords,zoom,tileSize);
+
+    p.x-= delta.x();
+    p.y-= delta.y();
+    geocoords = myMercator::pixelToGeoCoord(p,zoom,tileSize);
+    updateContent();
+    update();
+}
+
+void cacaMapMouse::mouseDoubleClickEvent(QMouseEvent* e)
+{
+    //do the zoom-in animation magic
+    if (e->button() == Qt::LeftButton)
+    {
+        QPoint deltapx = e->pos() - QPoint(width()/2,height()/2);
+        longPoint currpospx = myMercator::geoCoordToPixel(geocoords,zoom,tileSize);
+        longPoint newpospx;
+        newpospx.x = currpospx.x + deltapx.x();
+        newpospx.y = currpospx.y + deltapx.y();
+        destination = myMercator::pixelToGeoCoord(newpospx,zoom,tileSize);
+        connect(timer,SIGNAL(timeout()),this,SLOT(zoomAnim()));
+        timer->start(40);
+    }
+    //do a simple zoom out for now
+    else if (e->button() == Qt::RightButton)
+    {
+        zoomOut();
+        slider->setSliderPosition(zoom);
+        update();
+    }
+}
+
+void cacaMapMouse::zoomAnim()
+{
+    float delta = buffzoomrate - 0.5;
+    if (delta > mindistance)
+    {
+        QPointF deltaSpace = destination - geocoords;
+        geocoords+=animrate*deltaSpace;
+        buffzoomrate-= delta*animrate;
+        updateContent();
+    }
+    //you are already there
+    else
+    {
+        timer->stop();
+        disconnect(timer,SIGNAL(timeout()),this,SLOT(zoomAnim()));
+        geocoords = destination;
+        buffzoomrate = 1.0;
+        zoomIn();
+        slider->setSliderPosition(zoom);
+    }
+    update();
+}
+void cacaMapMouse::updateZoom(int newZoom)
+{
+    setZoom(newZoom);
+    update();
+}
+void cacaMapMouse::paintEvent(QPaintEvent *e)
+{
+    cacaMap::paintEvent(e);
+    QPainter painter(this);
+    painter.fillRect(QRect(0,0,width(),height()), QBrush(QColor(128, 128, 128, 128)));
 }

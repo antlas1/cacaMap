@@ -1,4 +1,5 @@
 # cacaMap
+Fixed for for building with Qt6/Qt5, and simplifyed.
 CacaMap  is a Qt based  map browser widget that works with a bunch of tile servers.
 ![cacamap gif](cacamap.gif)
 
@@ -30,6 +31,7 @@ void myDerivedMap::paintEvent(QPaintEvent *e)
 ```
 
 ## License
+copyright 2025 antlas
 copyright 2010 Jean Fairlie
 jmfairlie@gmail.com
 
